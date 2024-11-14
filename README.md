@@ -6,6 +6,35 @@ This was primarily a learning project for me to understand how effects-and-handl
 
 ## design
 
+```racket
+(define (write msg)
+  (suspend `(write ,msg)))
+
+(define computation
+  (λ () (begin (write "hello") (write "world!"))))
+
+(try (computation)
+  [`(write ,msg)
+    (println msg) (resume)])
+
+(try (computation)
+  [`(write ,msg)
+    (println (format "I see you tried to print '~a'. Not so fast!" msg)) (resume)])
+
+(define (read)
+  (suspend `(read)))
+
+(define computation-ii
+  (λ () (begin (write "hello--") (write (string-append "hello " (read))))))
+
+(try (computation-ii)
+  [`(write ,msg)
+    (println msg) (resume)]
+  [`(read)
+    (println "(what's your name)")
+    (resume (read-line))])
+```
+
 The design of `cio` is primarily modelled after [Effekt](https://effekt-lang.org/): though lacking the types, of course. `cio` provides four primitives: `try`, `suspend`, `resume`, and `resume/suspend`.
 
 `try` steps a computation to a value. If in that process, an effect is raised by `suspend`, and an appropriate *handler* (case) is provided for it within the `try` body, the effect is handled there and the computation is (possibly) resumed.
