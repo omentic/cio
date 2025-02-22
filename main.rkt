@@ -87,35 +87,127 @@
 (module+ test
   (require rackunit)
 
-  ; Shallow handlers
-  (check-equal? "one"
-    (try #:shallow (map (λ (x) (suspend `(yield ,x)) x) '(1 2 3))
-      [`(yield 1) "one"]))
+  ; Mutable state, for easier testing
+  (define state null)
+  (define (push x* x)
+    (append x* (list x)))
 
-  (check-equal? '(1 2 3)
-    (try #:shallow (map (λ (x) (if (= x 1) (begin (suspend `(yield ,x)) x) x)) '(1 2 3))
-      [`(yield ,x) (set! state x) (resume)]))
+  ; Shallow handlers
+  (check-equal?
+    (try #:shallow (for-each (λ (x) (suspend `(yield ,x))) '(1 2 3))
+      [`(yield 1) "one"])
+    "one")
+
+  (check-equal?
+    (try #:shallow (map (λ (x) (when (= x 1) (suspend `(yield ,x))) x) '(1 2 3))
+      [`(yield ,x)
+        (set! state x)
+        (resume)])
+    '(1 2 3))
   (check-equal? 1 state)
 
   ; Deep handlers
-  (define state #f)
+  (set! state null)
+  (check-equal?
+    (try (map (λ (x) (suspend `(yield ,x)) x) '(1 2 3))
+      [`(yield ,x)
+        (set! state (push state x))
+        (resume)])
+    '(1 2 3))
+  (check-equal? state '(1 2 3))
 
   (set! state null)
-  (check-equal? '(1 2 3)
-    (try (map (λ (x) (begin (suspend `(yield ,x)) x)) '(1 2 3))
-      [`(yield ,x) (set! state (append state (list x))) (resume)]))
-  (check-equal? '(1 2 3) state)
-
-  (set! state null)
-  (check-equal? '(2 3 4)
+  (check-equal?
     (try (map (λ (x) (suspend `(yield ,x))) '(1 2 3))
-      [`(yield ,x) (set! state (append state (list x))) (resume (+ 1 x))]))
-  (check-equal? '(1 2 3) state)
+      [`(yield ,x)
+        (set! state (push state x))
+        (resume (+ 1 x))])
+    '(2 3 4))
+  (check-equal? state '(1 2 3))
+
+  ; Nested shallow handlers
+  (set! state null)
+  (try #:shallow
+    (try #:shallow
+      (try #:shallow (for-each (λ (x) (suspend `(yield ,x))) '(1 2 3))
+        [`(yield ,x)
+          (set! state (push state (cons 1 x)))
+          (resume)])
+      [`(yield ,x)
+        (set! state (push state (cons 2 x)))
+        (resume)])
+    [`(yield ,x)
+      (set! state (push state (cons 3 x)))
+      (resume)])
+  (check-equal? state '((1 . 1) (2 . 2) (3 . 3)))
 
   (set! state null)
-  (check-equal? '(3 4 5)
+  (try #:shallow
+    (try #:shallow
+      (try #:shallow (for-each (λ (x) (suspend `(exception ,x))) '(1 2 3))
+        [`(exception ,x) ; note the lack of resumes! explicit resumption is necessary
+          (set! state (push state (cons 1 x)))])
+      [`(exception ,x)
+        (set! state (push state (cons 2 x)))])
+    [`(exception ,x)
+      (set! state (push state (cons 3 x)))])
+  (check-equal? state '((1 . 1)))
+
+  ; Nested deep handlers
+  (set! state null)
+  (check-equal?
     (try
       (try (map (λ (x) (suspend `(yield ,x))) '(1 2 3))
-        [`(bield ,x) (set! state #f) (resume (+ 1 x))])
-      [`(yield ,x) (set! state (append state (list x))) (resume (+ 2 x))]))
-  (check-equal? '(1 2 3) state))
+        [`(exception ,x) ; should not be caught here
+          (set! state "failure!")])
+      [`(yield ,x)
+        (set! state (push state x))
+        (resume (+ 1 x))])
+    '(2 3 4))
+  (check-equal? state '(1 2 3))
+
+  ; Ensure multiple resumption works appropriately
+  (set! state null)
+  (try ; note that state is inlined by racket here...
+    (set! state (push state (suspend `(hole))))
+    [`(hole)
+      (resume 1)
+      (resume 2)
+      (resume 3)])
+  (check-equal? state '(3))
+
+  (set! state null)
+  (try ; evaluating suspend before state fixes it
+    (let ([value (suspend `(hole))])
+      (set! state (push state value)))
+    [`(hole)
+      (resume 1)
+      (resume 2)
+      (resume 3)])
+  (check-equal? state '(1 2 3))
+
+  (set! state null)
+  (try
+    (for-each (λ (x)
+      (let ([value (suspend `(yield ,x))])
+        (set! state (push state value)))) '(1 2 3))
+    [`(yield ,x)
+      (resume x)
+      (resume x)])
+  (check-equal? state '(1 2 3 3 2 3 3 1 2 3 3 2 3 3))
+
+  (set! state null)
+  (try #:shallow
+    (try #:shallow
+      (try #:shallow (for-each (λ (x) (suspend `(yield ,x))) '(1 2 3))
+        [`(yield ,x)
+          (set! state (push state x))
+          (resume)
+          (resume)])
+      [`(yield ,x)
+        (set! state (push state x))
+        (resume)])
+    [`(yield ,x)
+      (set! state (push state x))])
+  (check-equal? state '(1 2 3))
+  )

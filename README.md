@@ -4,8 +4,6 @@
 
 This was primarily a learning project for me to understand how effects-and-handlers and `call/cc` and the like slot together. If you want to use it, go ahead! The implementation is fairly minimal. Be warned it is not well-tested, and not guaranteed to behave with other continuation-based libraries (though it should).
 
-## design
-
 ```racket
 (define (write msg)
   (suspend `(write ,msg)))
@@ -35,7 +33,10 @@ This was primarily a learning project for me to understand how effects-and-handl
     (resume (read-line))])
 ```
 
-The design of `cio` is primarily modelled after [Effekt](https://effekt-lang.org/): though lacking the types, of course. `cio` provides four primitives: `try`, `suspend`, `resume`, and `resume/suspend`.
+## design
+
+The design of `cio` is primarily modelled after [Effekt](https://effekt-lang.org/): though lacking the types, of course. \
+`cio` provides four primitives: `try`, `suspend`, `resume`, and `resume/suspend`.
 
 `try` steps a computation to a value. If in that process, an effect is raised by `suspend`, and an appropriate *handler* (case) is provided for it within the `try` body, the effect is handled there and the computation is (possibly) resumed.
 
