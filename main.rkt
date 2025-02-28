@@ -9,7 +9,7 @@
 ;; This should be instanciated whenever this module is imported.
 (define cio (make-continuation-prompt-tag 'cio))
 
-;; The suspend proc is one of three or four useful primitives.
+;; The suspend proc is one of several useful primitives.
 ;; It takes an *effect* (which is expected to be a *value*)
 ;; wrapped in a structural *tag*: i.e. `(yield ,(+ 1 x))
 (define (suspend effect)
@@ -48,7 +48,7 @@
 (define (with-effect-handler handler action)
   (call/prompt (λ (_) (action)) cio handler (void)))
 
-;; The try macro is one of three useful primitives.
+;; The try macro is another useful primitive.
 ;; It takes a *computation*, which may raise an *effect*, and
 ;; a series of effect *patterns* and associated *handlers*.
 (define-syntax try
