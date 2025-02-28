@@ -2,43 +2,51 @@
 (require racket/control)
 (require racket/stxparam)
 (require syntax/parse/define)
-(provide try resume resume/suspend suspend)
+(provide with-effect-handler try resume resume/suspend suspend)
 
 ;; Define our own special prompt tag for use by this effects system...
-;; so as to not interfere with anything else using continuations
+;; so as to not interfere with anything else using continuations.
 ;; This should be instanciated whenever this module is imported.
 (define cio (make-continuation-prompt-tag 'cio))
 
 ;; The suspend proc is one of three or four useful primitives.
 ;; It takes an *effect* (which is expected to be a *value*)
-;; wrapped in a *tag*: i.e. `(yield ,(+ 1 x))
+;; wrapped in a structural *tag*: i.e. `(yield ,(+ 1 x))
 (define (suspend effect)
-  ;; If no effectful continuation label exists, error: all effects must be handled
+  ;; If no effectful continuation label exists, error out: all effects must be handled
   (unless (continuation-prompt-available? cio)
     (error 'suspend "unhandled effect ~a" effect))
   ;; Otherwise, capture the current continuation with call/comp, and abort up
   ;; to the nearest effect handler in the call stack with abort/cc
-  (call/comp (λ (continuation) (abort/cc cio effect continuation)) cio))
+  (call/comp (λ (k) (abort/cc cio effect k)) cio))
 
-;; A helper parameter for ensuring (resume) is only used in appropriate contexts.
-(define-syntax-parameter try-continuation #f)
+;; A helpful parameter for ensuring (resume) is only used in appropriate contexts.
+(define-syntax-parameter try-k #f)
 
 ;; The resume macro only functions within a handler.
 ;; It resumes the implicit continuation, possibly with a value.
 (define-syntax-parse-rule (resume (~optional value))
-  #:fail-unless (syntax-parameter-value #'try-continuation)
-  "resume must be used within the body of a try handler"
-  #:with continuation (syntax-parameter-value #'try-continuation)
-  (continuation (~? value)))
+  #:fail-unless (syntax-parameter-value #'try-k)
+  "must be used within the body of a try handler"
+  #:with k (syntax-parameter-value #'try-k)
+  (k (~? value)))
 
 ;; The resume/suspend macro only functions within a handler.
 ;; It resumes the implicit continuation with an *effect* that is immediately suspended.
 ;; This allows for the implementation of "bidirectional control flow".
 (define-syntax-parse-rule (resume/suspend effect)
-  #:fail-unless (syntax-parameter-value #'try-continuation)
-  "resume must be used within the body of a try handler"
-  #:with continuation (syntax-parameter-value #'try-continuation)
-  (call-in-continuation continuation (λ () (suspend effect))))
+  #:fail-unless (syntax-parameter-value #'try-k)
+  "must be used within the body of a try handler"
+  #:with k (syntax-parameter-value #'try-k)
+  (call-in-continuation k (thunk (suspend effect))))
+
+;; The with-effect-handler function is defined on analogy to r7rs's with-exception-handler.
+;; It takes in a handler function expecting a value and a continuation,
+;; and a zero-argument thunk, being the computation to be handled.
+;; This is no more than a layer over call/prompt.
+;; As seen in the try macro definition, it is *very* close to shallow handlers.
+(define (with-effect-handler handler action)
+  (call/prompt (λ (_) (action)) cio handler (void)))
 
 ;; The try macro is one of three useful primitives.
 ;; It takes a *computation*, which may raise an *effect*, and
@@ -46,34 +54,38 @@
 (define-syntax try
   (syntax-rules ()
     [(try #:shallow computation [pattern handler ...] ...)
-      ;; Wrap the computation in call/prompt, and evaluate it.
-      ;; If the computation completes without jumping to the prompt: return the value
-      (call/prompt (λ (_) computation) cio ; need to inject cio in??
+      (with-effect-handler
         ;; If the computation jumps to the prompt tag: we have a suspended effect!
-        (λ (effect continuation)
+        (λ (effect k)
           ;; Match on the suspended effect, with the provided patterns/handlers.
           (match effect
             ;; If the effect matches a pattern, run the handler.
             ;; This may use the suspended continuation (if resume is called).
-            [pattern (syntax-parameterize ([try-continuation #'continuation]) handler ...)] ...
+            [pattern (syntax-parameterize ([try-k #'k])
+              ;; Pass the necessary implicit parameters to the handler.
+              handler ...)] ...
             ;; If the effect matches no patterns, re-suspend up the call stack.
-            [_ (abort/cc cio effect continuation)]))
-        (void))]
+            ;; We must invoke k so as to not lose the initial site of suspension.
+            ;; Alternatively, we could write (abort/cc cio effect k) directly.
+            [_ (k (suspend effect))]))
+        ;; Wrap the computation in call/prompt, and evaluate it.
+        ;; If the computation completes without jumping to the prompt: return the value
+        (thunk computation))]
 
-    ;; We do the same as above for deep handlers (the default), but wrap the handlers
-    ;; themselves in a new layer of call/prompt.
+    ;; The implementation of deep handlers is much the same as the above,
+    ;; but we wrap the handlers themselves in a new layer of call/prompt.
     [(try #:deep computation [pattern handler ...] ...)
       (letrec ([run (λ (action)
-        (call/prompt action cio
-          (λ (effect continuation)
+        (with-effect-handler
+          (λ (effect k)
             (match effect
-              [pattern (syntax-parameterize ([try-continuation #'continuation])
+              [pattern (syntax-parameterize ([try-k #'k])
                 ;; Here, we wrap the handler body in our call/prompt again.
-                (run (λ (_) handler)) ...)] ...
+                (run (thunk handler)) ...)] ...
               ;; We do NOT wrap the unhandled case in call/prompt, so as to not loop.
-              [_ (abort/cc cio effect continuation)]))
-          (void)))])
-        (run (λ (_) computation)))]
+              [_ (k (suspend effect))]))
+          action))])
+        (run (thunk computation)))]
 
     ;; I like deep handlers a lot more than shallow handlers. So they're the default.
     [(try computation [pattern handler ...] ...)
