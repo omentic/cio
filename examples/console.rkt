@@ -6,10 +6,9 @@
   (suspend `(write ,msg)))
 
 (module+ main
-  (define computation
-    (thunk
-      (write "hello")
-      (write "world!")))
+  (define (computation)
+    (write "hello")
+    (write "world!"))
 
   (try (computation)
     [`(write ,msg)
@@ -25,10 +24,9 @@
   (suspend `(read)))
 
 (module+ main
-  (define computation-ii
-    (thunk
-      (write "Hello-- oh, I don't know your name.")
-      (write (string-append "Hello " (read)))))
+  (define (computation-ii)
+    (write "Hello-- oh, I don't know your name.")
+    (write (string-append "Hello " (read))))
 
   (try (computation-ii)
     [`(write ,msg)

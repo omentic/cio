@@ -10,8 +10,8 @@ The implementation is well-commented, with the intention of being useful to stud
 (define (write msg)
   (suspend `(write ,msg)))
 
-(define computation
-  (thunk (write "hello") (write "world!")))
+(define (computation)
+  (write "hello") (write "world!"))
 
 (try (computation)
   [`(write ,msg)
@@ -25,8 +25,8 @@ The implementation is well-commented, with the intention of being useful to stud
 (define (read)
   (suspend `(read)))
 
-(define another-computation
-  (thunk (write (string-append "Hello, " (read)))))
+(define (another-computation)
+  (write (string-append "Hello, " (read))))
 
 (try (another-computation)
   [`(write ,msg)

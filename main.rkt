@@ -20,7 +20,7 @@
   ;; to the nearest effect handler in the call stack with abort/cc
   (call/comp (λ (k) (abort/cc cio effect k)) cio))
 
-;; A helpful parameter for ensuring (resume) is only used in appropriate contexts.
+;; A helpful parameter for ensuring resume is only used in appropriate contexts.
 (define-syntax-parameter try-k #f)
 
 ;; The resume macro only functions within a handler.
@@ -40,9 +40,9 @@
   #:with k (syntax-parameter-value #'try-k)
   (call-in-continuation k (thunk (suspend effect))))
 
-;; The with-effect-handler function is defined on analogy to r7rs's with-exception-handler.
-;; It takes in a handler function expecting a value and a continuation,
-;; and a zero-argument thunk, being the computation to be handled.
+;; The with-effect-handler procedure is defined on analogy to r7rs's with-exception-handler.
+;; It takes in a handler procedure expecting a value and a continuation,
+;; and a zero-argument thunk being the computation to be handled.
 ;; This is no more than a layer over call/prompt.
 ;; As seen in the try macro definition, it is *very* close to shallow handlers.
 (define (with-effect-handler handler action)
@@ -223,4 +223,23 @@
     [`(yield ,x)
       (set! state (push state x))])
   (check-equal? state '(1 2 3))
-  )
+
+  ; resume/suspend
+  (set! state null)
+  (try #:shallow
+    (try #:shallow (suspend `(yield 1))
+      [`(yield ,x)
+        (set! state (push state x))
+        (resume/suspend `(yield ,(+ x 1)))])
+    [`(yield ,x)
+      (set! state (push state x))
+      (resume)])
+  (check-equal? state '(1 2))
+
+  (set! state null)
+  (try (suspend `(yield ,1))
+    [`(yield ,x)
+      (unless (> x 2)
+        (resume/suspend `(yield ,(+ x 1))))
+      (set! state (push state x))])
+  (check-equal? state '(3 2 1)))
