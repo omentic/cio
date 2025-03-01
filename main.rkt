@@ -72,20 +72,21 @@
         ;; If the computation completes without jumping to the prompt: return the value
         (thunk computation))]
 
-    ;; The implementation of deep handlers is much the same as the above,
+    ;; Our implementation of deep handlers is much the same as the above,
     ;; but we wrap the handlers themselves in a new layer of call/prompt.
     [(try #:deep computation [pattern handler ...] ...)
-      (letrec ([run (λ (action)
-        (with-effect-handler
-          (λ (effect k)
-            (match effect
-              [pattern (syntax-parameterize ([try-k #'k])
-                ;; Here, we wrap the handler body in our call/prompt again.
-                (run (thunk handler)) ...)] ...
-              ;; We do NOT wrap the unhandled case in call/prompt, so as to not loop.
-              [_ (k (suspend effect))]))
-          action))])
-        (run (thunk computation)))]
+      (let ()
+        (define (run action)
+          (with-effect-handler
+            (λ (effect k)
+              (match effect
+                [pattern (syntax-parameterize ([try-k #'k])
+                  ;; Here, we wrap the handler body in our call/prompt again.
+                  (run (thunk handler)) ...)] ...
+                ;; We do NOT wrap the unhandled case in call/prompt, so as to not loop.
+                [_ (k (suspend effect))]))
+            action))
+      (run (thunk computation)))]
 
     ;; I like deep handlers a lot more than shallow handlers. So they're the default.
     [(try computation [pattern handler ...] ...)
