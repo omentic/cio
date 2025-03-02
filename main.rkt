@@ -34,38 +34,43 @@
 (define-syntax try
   (syntax-rules ()
     [(try #:shallow computation [pattern handler ...] ...)
+      ;; Wrap the computation in call/prompt with our global effect tag, and evaluate it.
+      ;; If the computation completes without jumping to the prompt: return the value
       (with-effect-handler
         ;; If the computation jumps to the prompt tag: we have a suspended effect!
+        ;; Match on the suspended effect, with the provided patterns/handlers.
         (λ (effect k)
-          ;; Match on the suspended effect, with the provided patterns/handlers.
           (match effect
             ;; If the effect matches a pattern, run the handler.
-            ;; This may use the suspended continuation (if resume is called).
-            ;; We must pass the necessary implicit parameters to the handler.
-            [pattern (syntax-parameterize ([try-k #'k] [try-run #f])
-              handler ...)] ...
+            ;; This may use the suspended continuation k, if resume is called.
+            ;; Ignore try-run for now. We'll come back to it later.
+            [pattern (syntax-parameterize ([try-k #'k] [try-run #f]) handler ...)] ...
             ;; If the effect matches no patterns, re-suspend up the call stack.
             ;; We must invoke k so as to not lose the initial site of suspension.
             ;; Alternatively, we could write (abort/cc cio effect k) directly.
             [_ (k (suspend effect))]))
-        ;; Wrap the computation in call/prompt, and evaluate it.
-        ;; If the computation completes without jumping to the prompt: return the value
+        ;; We thunkify the computation here as with-effect-handler expects a procedure to run.
         (thunk computation))]
 
-    ;; Our implementation of deep handlers is much the same as the above,
-    ;; but we wrap the handlers themselves in a new layer of call/prompt.
+    ;; Our implementation of deep handlers is much the same as the above.
+    ;; However, we wrap any invocation of resume in a new layer of call/prompt.
+    ;; This lets one handler be able to catch multiple effects from the same computation.
     [(try #:deep computation [pattern handler ...] ...)
       (let ()
+        ;; We define the main code of our handler as a procedure to be able to pass it around.
         (define (run action)
           (with-effect-handler
             (λ (effect k)
               (match effect
-                ;; Here, we wrap the handler body in our call/prompt again.
-                [pattern (syntax-parameterize ([try-k #'k] [try-run #'run])
-                  handler ...)] ...
-                ;; We do NOT wrap the unhandled case in call/prompt, so as to not loop.
-                [_ (k (suspend effect))]))
+                ;; Here, we provide the run procedure as a parameter to the handler body.
+                ;; This enables any invocation of resume to re-wrap the computation in it.
+                [pattern (syntax-parameterize ([try-k #'k] [try-run #'run]) handler ...)] ...
+                ;; If the pattern is not matched, we re-suspend up the stack.
+                ;; We must take care to only re-wrap the invocation of the continuation with a value,
+                ;; as wrapping the re-suspension of the unhandled effect would loop.
+                [_ (let ([x (suspend effect)]) (run (thunk (k x))))]))
             action))
+      ;; We then invoke our helper procedure instead of calling with-effect-handler directly.
       (run (thunk computation)))]
 
     ;; I like deep handlers a lot more than shallow handlers. So they're the default.
@@ -82,19 +87,16 @@
 ;; It resumes the implicit continuation, possibly with a value.
 (define-syntax (resume stx)
   (syntax-parse stx
-    [(resume) ; deep handler
+    ;; When within deep handlers, resume must re-wrap the invoked continuation in the handler.
+    [(resume)
       #:fail-unless (syntax-parameter-value #'try-k)
         "must be used within the body of a try handler"
       #:attr k (syntax-parameter-value #'try-k)
       #:attr run (syntax-parameter-value #'try-run)
-        #:when (attribute run)
+        #:when (attribute run) ; deep handler, try-run is #f otherwise
       #'(run k)]
-    [(resume) ; shallow handler
-      #:fail-unless (syntax-parameter-value #'try-k)
-        "must be used within the body of a try handler"
-      #:attr k (syntax-parameter-value #'try-k)
-      #'(k)]
-    [(resume value) ; deep handler
+    ;; Some care must be taken to ensure effects in value position are not caught by the wrong handler.
+    [(resume value)
       #:fail-unless (syntax-parameter-value #'try-k)
         "must be used within the body of a try handler"
       #:attr k (syntax-parameter-value #'try-k)
@@ -102,27 +104,30 @@
         #:when (attribute run)
       #'(let ([x value])
           (run (thunk (k x))))]
-    [(resume value) ; shallow handler
+    ;; Shallow handlers are less complex.
+    [(resume (~optional value))
       #:fail-unless (syntax-parameter-value #'try-k)
         "must be used within the body of a try handler"
       #:attr k (syntax-parameter-value #'try-k)
-      #:attr run (syntax-parameter-value #'try-run)
-      #'(k value)]))
+      #'(k (~? value))]))
 
 ;; The resume/suspend macro only functions within a handler.
 ;; It resumes the implicit continuation with an *effect* that is immediately suspended.
 ;; This allows for the implementation of "bidirectional control flow".
 (define-syntax (resume/suspend stx)
   (syntax-parse stx
-    [(resume/suspend effect) ; deep handler
+    ;; Similarly, resume/suspend must also re-wrap its invoked continuation when in a deep handler.
+    ;; We again must ensure effects in *effect* position here are not caught by the wrong handler,
+    ;; since resume/suspend takes charge of suspending the provided effect in the appropriate context.
+    [(resume/suspend effect)
       #:fail-unless (syntax-parameter-value #'try-k)
         "must be used within the body of a try handler"
       #:attr k (syntax-parameter-value #'try-k)
       #:attr run (syntax-parameter-value #'try-run)
-        #:when (attribute run)
+        #:when (attribute run) ; deep handler, try-run is #f otherwise
       #'(let ([x effect])
         (run (thunk (call-in-continuation k (thunk (suspend x))))))]
-    [(resume/suspend effect) ; shallow handler
+    [(resume/suspend effect)
       #:fail-unless (syntax-parameter-value #'try-k)
         "must be used within the body of a try handler"
       #:attr k (syntax-parameter-value #'try-k)
@@ -291,6 +296,21 @@
       (set! state (push state 2))
       (resume 3)])
   (check-equal? state '(1 2 3))
+
+  ; Catching an effect by an outer handler first, then an inner handler
+  (set! state null)
+  (try
+    (try
+      (begin
+        (suspend `(yield 1))
+        (suspend `(yield 2)))
+      [`(yield 2)
+        (set! state (push state 2))
+        (resume (void))])
+    [`(yield 1)
+      (set! state (push state 1))
+      (resume (void))])
+  (check-equal? state '(1 2))
 
   ; resume/suspend
   (set! state null)
