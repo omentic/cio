@@ -21,24 +21,60 @@
   (call/comp (λ (k) (abort/cc cio effect k)) cio))
 
 ;; A helpful parameter for ensuring resume is only used in appropriate contexts.
+;; Does double duty in abstracting away the continuation invoked by resume.
 (define-syntax-parameter try-k #f)
+;; A necessary parameter to allow wrapping the call to resume in for deep handlers.
+(define-syntax-parameter try-run #f)
 
 ;; The resume macro only functions within a handler.
 ;; It resumes the implicit continuation, possibly with a value.
-(define-syntax-parse-rule (resume (~optional value))
-  #:fail-unless (syntax-parameter-value #'try-k)
-  "must be used within the body of a try handler"
-  #:with k (syntax-parameter-value #'try-k)
-  (k (~? value)))
+(define-syntax (resume stx)
+  (syntax-parse stx
+    [(resume) ; deep handler
+      #:fail-unless (syntax-parameter-value #'try-k)
+        "must be used within the body of a try handler"
+      #:attr k (syntax-parameter-value #'try-k)
+      #:attr run (syntax-parameter-value #'try-run)
+        #:when (attribute run)
+      #'(run k)]
+    [(resume) ; shallow handler
+      #:fail-unless (syntax-parameter-value #'try-k)
+        "must be used within the body of a try handler"
+      #:attr k (syntax-parameter-value #'try-k)
+      #'(k)]
+    [(resume value) ; deep handler
+      #:fail-unless (syntax-parameter-value #'try-k)
+        "must be used within the body of a try handler"
+      #:attr k (syntax-parameter-value #'try-k)
+      #:attr run (syntax-parameter-value #'try-run)
+        #:when (attribute run)
+      #'(let ([x value])
+          (run (thunk (k x))))]
+    [(resume value) ; shallow handler
+      #:fail-unless (syntax-parameter-value #'try-k)
+        "must be used within the body of a try handler"
+      #:attr k (syntax-parameter-value #'try-k)
+      #:attr run (syntax-parameter-value #'try-run)
+      #'(k value)]))
 
 ;; The resume/suspend macro only functions within a handler.
 ;; It resumes the implicit continuation with an *effect* that is immediately suspended.
 ;; This allows for the implementation of "bidirectional control flow".
-(define-syntax-parse-rule (resume/suspend effect)
-  #:fail-unless (syntax-parameter-value #'try-k)
-  "must be used within the body of a try handler"
-  #:with k (syntax-parameter-value #'try-k)
-  (call-in-continuation k (thunk (suspend effect))))
+(define-syntax (resume/suspend stx)
+  (syntax-parse stx
+    [(resume/suspend effect) ; deep handler
+      #:fail-unless (syntax-parameter-value #'try-k)
+        "must be used within the body of a try handler"
+      #:attr k (syntax-parameter-value #'try-k)
+      #:attr run (syntax-parameter-value #'try-run)
+        #:when (attribute run)
+      #'(let ([x effect])
+        (run (thunk (call-in-continuation k (thunk (suspend x))))))]
+    [(resume/suspend effect) ; shallow handler
+      #:fail-unless (syntax-parameter-value #'try-k)
+        "must be used within the body of a try handler"
+      #:attr k (syntax-parameter-value #'try-k)
+      #'(call-in-continuation k (thunk (suspend effect)))]))
 
 ;; The with-effect-handler procedure is defined on analogy to r7rs's with-exception-handler.
 ;; It takes in a handler procedure expecting a value and a continuation,
@@ -61,8 +97,8 @@
           (match effect
             ;; If the effect matches a pattern, run the handler.
             ;; This may use the suspended continuation (if resume is called).
-            [pattern (syntax-parameterize ([try-k #'k])
-              ;; Pass the necessary implicit parameters to the handler.
+            ;; We must pass the necessary implicit parameters to the handler.
+            [pattern (syntax-parameterize ([try-k #'k] [try-run #f])
               handler ...)] ...
             ;; If the effect matches no patterns, re-suspend up the call stack.
             ;; We must invoke k so as to not lose the initial site of suspension.
@@ -80,9 +116,9 @@
           (with-effect-handler
             (λ (effect k)
               (match effect
-                [pattern (syntax-parameterize ([try-k #'k])
-                  ;; Here, we wrap the handler body in our call/prompt again.
-                  (run (thunk handler)) ...)] ...
+                ;; Here, we wrap the handler body in our call/prompt again.
+                [pattern (syntax-parameterize ([try-k #'k] [try-run #'run])
+                  handler ...)] ...
                 ;; We do NOT wrap the unhandled case in call/prompt, so as to not loop.
                 [_ (k (suspend effect))]))
             action))
@@ -224,6 +260,38 @@
       (set! state (push state x))])
   (check-equal? state '(1 2 3))
 
+  ; Suspending from within a handler...
+  ; (shallow and deep handlers should behave similarly here)
+  (set! state null)
+  (try #:shallow
+    (try #:shallow (suspend `(yield 1))
+      [`(yield ,x) (suspend `(yield ,x))])
+    [`(yield ,x) (set! state x)])
+  (check-equal? state 1)
+
+  (set! state null)
+  (try
+    (try (suspend `(yield 1))
+      [`(yield ,x) (suspend `(yield ,x))])
+    [`(yield ,x) (set! state x)])
+  (check-equal? state 1)
+
+  ; Suspending within a call to resume
+  (set! state null)
+  (try
+    (try
+      (let ([x (suspend `(yield 1))])
+        (set! state (push state x)))
+      [`(yield 1)
+        (set! state (push state 1))
+        (resume (suspend `(yield 2)))]
+      [`(yield ,x)
+        (set! state #f)])
+    [`(yield 2)
+      (set! state (push state 2))
+      (resume 3)])
+  (check-equal? state '(1 2 3))
+
   ; resume/suspend
   (set! state null)
   (try #:shallow
@@ -232,12 +300,12 @@
         (set! state (push state x))
         (resume/suspend `(yield ,(+ x 1)))])
     [`(yield ,x)
-      (set! state (push state x))
+      (set! state (push state (+ x 1)))
       (resume)])
-  (check-equal? state '(1 2))
+  (check-equal? state '(1 3))
 
   (set! state null)
-  (try (suspend `(yield ,1))
+  (try (suspend `(yield 1))
     [`(yield ,x)
       (unless (> x 2)
         (resume/suspend `(yield ,(+ x 1))))
