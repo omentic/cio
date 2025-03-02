@@ -93,45 +93,36 @@
         "must be used within the body of a try handler"
       #:attr k (syntax-parameter-value #'try-k)
       #:attr run (syntax-parameter-value #'try-run)
-        #:when (attribute run) ; deep handler, try-run is #f otherwise
-      #'(run k)]
+      (if (attribute run)
+        #'(run k) #'(k))]
     ;; Some care must be taken to ensure effects in value position are not caught by the wrong handler.
     [(resume value)
       #:fail-unless (syntax-parameter-value #'try-k)
         "must be used within the body of a try handler"
       #:attr k (syntax-parameter-value #'try-k)
       #:attr run (syntax-parameter-value #'try-run)
-        #:when (attribute run)
-      #'(let ([x value])
-          (run (thunk (k x))))]
-    ;; Shallow handlers are less complex.
-    [(resume (~optional value))
-      #:fail-unless (syntax-parameter-value #'try-k)
-        "must be used within the body of a try handler"
-      #:attr k (syntax-parameter-value #'try-k)
-      #'(k (~? value))]))
+      (if (attribute run)
+        #'(let ([x value]) ; do not catch effects raised in the handler body
+          (run (thunk (k x))))
+        #'(k value))]))
 
 ;; The resume/suspend macro only functions within a handler.
 ;; It resumes the implicit continuation with an *effect* that is immediately suspended.
 ;; This allows for the implementation of "bidirectional control flow".
 (define-syntax (resume/suspend stx)
   (syntax-parse stx
-    ;; Similarly, resume/suspend must also re-wrap its invoked continuation when in a deep handler.
-    ;; We again must ensure effects in *effect* position here are not caught by the wrong handler,
+    ;; Similarly to resume, resume/suspend must also re-wrap its invoked continuation when in a deep handler.
+    ;; We also again must ensure effects in *effect* position here are not caught by the wrong handler,
     ;; since resume/suspend takes charge of suspending the provided effect in the appropriate context.
     [(resume/suspend effect)
       #:fail-unless (syntax-parameter-value #'try-k)
         "must be used within the body of a try handler"
       #:attr k (syntax-parameter-value #'try-k)
       #:attr run (syntax-parameter-value #'try-run)
-        #:when (attribute run) ; deep handler, try-run is #f otherwise
-      #'(let ([x effect])
-        (run (thunk (call-in-continuation k (thunk (suspend x))))))]
-    [(resume/suspend effect)
-      #:fail-unless (syntax-parameter-value #'try-k)
-        "must be used within the body of a try handler"
-      #:attr k (syntax-parameter-value #'try-k)
-      #'(call-in-continuation k (thunk (suspend effect)))]))
+      (if (attribute run)
+        #'(let ([x effect]) ; do not catch effects raised in the handler body
+          (run (thunk (call-in-continuation k (thunk (suspend x))))))
+        #'(call-in-continuation k (thunk (suspend effect))))]))
 
 ; References:
 ; https://github.com/tonyg/racket-effects/
